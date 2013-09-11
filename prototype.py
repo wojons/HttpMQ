@@ -11,7 +11,7 @@ class queueDB():
         self.db.row_factory = self.dict_factory
         
     def tubeCreate(self, force=None):
-        self.db.execute("CREATE TABLE IF NOT EXISTS tube (ID INTEGER PRIMARY KEY AUTOINCREMENT,task TEXT NOT NULL,state INTEGER NOT NULL,ts INTEGER,ttr INTERGER)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS tube (ID INTEGER PRIMARY KEY AUTOINCREMENT,task TEXT NOT NULL,state INTEGER NOT NULL,ts DOUBLE,ttr INTERGER)")
         
     def tubeExists(self):
         c = self.db.cursor()
@@ -54,12 +54,49 @@ class queueDB():
         """
         c = self.db.cursor()
         ts = time.time()
-        c.excute("UPDATE tube SET ts=? WHERE ID=? AND state=1 AND ts=?", (ts,Id,timestamp,))
+        c.execute("UPDATE tube SET ts=? WHERE ID=? AND state=1 AND ts=?", (ts,Id,timestamp,))
         self.db.commit()
         if c.rowcount > 0:
             return ts
         else:
-            return false
+            return False
+            
+    def tubeFreeTask(self, Id, timestamp=None):
+        """
+        update a task and changes its state to 0
+        if a timestamp is provded it uses it to match
+        """
+        c = self.db.cursor()
+        ts = time.time()
+        if timestamp != None:
+            c.execute("UPDATE tube SET ts=?,state=0 WHERE ID=? AND state=1 AND ts=?", (ts,Id,timestamp,))
+            print "UPDATE tube SET ts=%s,state=0 WHERE ID=%s AND state=1 AND ts=%s" % (ts,Id,timestamp,)
+        else:
+            c.execute("UPDATE tube SET ts=?,state=0 WHERE ID=? AND state=1", (ts,Id,))
+            
+        self.db.commit()
+        if c.rowcount > 0:
+            return ts
+        else:
+            return False
+            
+    def tubeBuryTask(self, Id, timestamp=None):
+        """
+        update a task and changes its state to -1
+        if a timestamp is provded it uses it to match
+        """
+        c = self.db.cursor()
+        ts = time.time()
+        if timestamp != None:
+            c.execute("UPDATE tube SET ts=?,state=-1 WHERE ID=? AND state=1 AND ts=?", (ts,Id,timestamp,))
+        else:
+            c.execute("UPDATE tube SET ts=?,state=-1 WHERE ID=? AND state=1", (ts,Id,))
+            
+        self.db.commit()
+        if c.rowcount > 0:
+            return ts
+        else:
+            return False
     
     def tubeRmTask(self, Id, ts=None):
         """
@@ -118,8 +155,13 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
         self.db.close()
 
 class taskTouch(tornado.web.RequestHandler, queueDB):
-    def get(self):
-        self.write("Hello, world")
+    def get(self, queue, Id):
+        self.setQueue(queue)
+        touch = self.tubeTouchTask(Id, self.get_argument("ts",time.time()))
+        if touch != False:
+            self.write(json_encode({'tube' : queue, 'id': Id, 'ts':touch}))
+        else:
+            self.write(json_encode({'tube' : queue, 'id': Id, 'ts': False}))
         
 class taskRm(tornado.web.RequestHandler, queueDB):
     def delete(self, queue, Id):
@@ -128,16 +170,23 @@ class taskRm(tornado.web.RequestHandler, queueDB):
         self.db.close()
         self.write(json_encode({'tube' : queue, 'id': Id, 'deleted':rm}))
         
+class taskFree(tornado.web.RequestHandler, queueDB):
+    def get(self, queue, Id):
+        self.setQueue(queue)
+        free = self.tubeFreeTask(Id, self.get_argument("ts",None))
+        self.db.close()
+        self.write(json_encode({'tube' : queue, 'id': Id, 'freed':free}))
+        
 application = tornado.web.Application([
     (r"/queue/(.*)/task/get", taskGet), #get the next task
     (r"/queue/(.*)/task/get/(.*)", taskGet), #get an exact task
     (r"/queue/(.*)/task/add", taskAdd),
-    (r"/queue/(.*)/task/touch", MainHandler),
+    (r"/queue/(.*)/task/touch/(.*)", taskTouch),
     (r"/queue/(.*)/task/rm/(.*)", taskRm),
-    (r"/task/peak", MainHandler),
-    (r"/task/free", MainHandler),
-    (r"/task/bury", MainHandler),
-    (r"/task/kick", MainHandler),
+    (r"/queue/(.*)/task/free/(.*)", taskFree),
+    (r"/queue/(.*)/task/peak", MainHandler),
+    (r"/queue/(.*)/task/bury/(.*)", MainHandler),
+    (r"/queue/(.*)/task/kick", MainHandler),
 ])
 
 if __name__ == "__main__":
