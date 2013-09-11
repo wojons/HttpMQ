@@ -29,7 +29,19 @@ class queueDB():
             return c.lastrowid
         else:
             return False
+    def tubeGetTask(self, task):
+        c = self.db.cursor()
+        c.execute("BEGIN EXCLUSIVE TRANSACTION");
+        task = c.execute("SELECT ID as id,value FROM tube WHERE state=0 ORDER BY ID ASC LIMIT 1").fetchone()
+        if c.rowcount > 0:
+            ts = time.time();
+            c.execute("UPDATE tube SET state=1,ts=? WHERE ID=?", (ts, task['id']))
+        else:
+            task = None
         
+        self.db.commit()
+        return task
+            
     def dict_factory(self, cursor, row):
         d = {}
         for idx, col in enumerate(cursor.description):
@@ -40,8 +52,10 @@ class MainHandler(tornado.web.RequestHandler):
     def get(self):
         self.write("Hello, world")
         
-class taskGet(tornado.web.RequestHandler):
+class taskGet(tornado.web.RequestHandler, queueDB):
     def get(self, queue, task=None):
+        self.setQueue(queue)
+        
         self.write(queue)
         #self.write(task)
         self.write("Hello, world")
