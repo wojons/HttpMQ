@@ -11,7 +11,7 @@ class queueDB():
         self.db.row_factory = self.dict_factory
         
     def tubeCreate(self, force=None):
-        self.db.execute("CREATE TABLE IF NOT EXISTS tube (ID INTEGER PRIMARY KEY AUTOINCREMENT,value TEXT NOT NULL,state INTEGER NOT NULL,ts INTEGER,ttr INTERGER)")
+        self.db.execute("CREATE TABLE IF NOT EXISTS tube (ID INTEGER PRIMARY KEY AUTOINCREMENT,task TEXT NOT NULL,state INTEGER NOT NULL,ts INTEGER,ttr INTERGER)")
         
     def tubeExists(self):
         c = self.db.cursor()
@@ -21,21 +21,23 @@ class queueDB():
         else:
             return False
     
-    def tubeAddTask(self, task):
+    def tubeAddTask(self, task, ttr=5):
         c = self.db.cursor()
-        c.execute("INSERT INTO tube (value,state,ts) VALUES (?, 0, ?);", (task, time.time(), ))
+        c.execute("INSERT INTO tube (task,state,ts,ttr) VALUES (?, 0, ?, ?);", (task, time.time(), ttr,))
         self.db.commit()
         if c.rowcount > 0:
             return c.lastrowid
         else:
             return False
-    def tubeGetTask(self, task):
+    def tubeGetTask(self, task=None):
         c = self.db.cursor()
         c.execute("BEGIN EXCLUSIVE TRANSACTION");
-        task = c.execute("SELECT ID as id,value FROM tube WHERE state=0 ORDER BY ID ASC LIMIT 1").fetchone()
-        if c.rowcount > 0:
+        c.execute("SELECT ID as id,task FROM tube WHERE state=0 OR (state=1 AND ts+ttr < ? ) ORDER BY ID ASC LIMIT 1", (time.time(),))
+        task = c.fetchone()
+        if task != None:
             ts = time.time();
             c.execute("UPDATE tube SET state=1,ts=? WHERE ID=?", (ts, task['id']))
+            task['ts'] = ts
         else:
             task = None
         
@@ -55,10 +57,11 @@ class MainHandler(tornado.web.RequestHandler):
 class taskGet(tornado.web.RequestHandler, queueDB):
     def get(self, queue, task=None):
         self.setQueue(queue)
-        
-        self.write(queue)
-        #self.write(task)
-        self.write("Hello, world")
+        task = self.tubeGetTask()
+        if task != None:
+            self.write(json_encode({'tube' : queue, 'task': task['task'], 'id':task['id'], 'ts':task['ts']}))
+        else:
+            self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
 
 class taskAdd(tornado.web.RequestHandler, queueDB):
     def put(self, queue):
