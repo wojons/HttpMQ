@@ -21,18 +21,25 @@ class queueDB():
         else:
             return False
     
-    def tubeAddTask(self, task, ttr=60):
+    def tubeAddTask(self, task, ttr=60,ts=time.time()):
         c = self.db.cursor()
-        c.execute("INSERT INTO tube (task,state,ts,ttr) VALUES (?, 0, ?, ?);", (task, time.time(), ttr,))
+        c.execute("INSERT INTO tube (task,state,ts,ttr) VALUES (?, 0, ?, ?);", (task, ts, ttr,))
         self.db.commit()
         if c.rowcount > 0:
             return c.lastrowid
         else:
             return False
+    def tubePeekTask(self, Id=None):
+        c = self.db.cursor()
+        c.execute("SELECT ID as id,task FROM tube WHERE state=0 OR (state=1 AND ts+ttr < ? ) ORDER BY ID ASC LIMIT 1", (time.time(),))
+        task = c.fetchone()
+        return task
+        
     def tubeGetTask(self, Id=None, ttr=None):
+        ts = time.time()
         c = self.db.cursor()
         c.execute("BEGIN EXCLUSIVE TRANSACTION");
-        c.execute("SELECT ID as id,task FROM tube WHERE state=0 OR (state=1 AND ts+ttr < ? ) ORDER BY ID ASC LIMIT 1", (time.time(),))
+        c.execute("SELECT ID as id,task FROM tube WHERE (state=0 OR (state=1 AND ts+ttr < ? )) AND ts <= ? ORDER BY ID ASC LIMIT 1", (ts, ts,))
         task = c.fetchone()
         if task != None:
             ts = time.time();
@@ -46,6 +53,7 @@ class queueDB():
         
         self.db.commit()
         return task
+    
     def tubeTouchTask(self, Id, timestamp):
         """
         update the timestamp of an open task
@@ -126,6 +134,9 @@ class MainHandler(tornado.web.RequestHandler):
         self.write("Hello, world")
         
 class taskGet(tornado.web.RequestHandler, queueDB):
+    """
+    This will need to be able to get from more then one queue and be able to get more then one item
+    """
     def get(self, queue, task=None):
         self.setQueue(queue)
         ttr = self.get_argument("ttr",None)
@@ -135,7 +146,21 @@ class taskGet(tornado.web.RequestHandler, queueDB):
         else:
             self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
 
+class taskPeek(tornado.web.RequestHandler, queueDB):
+    def get(self, queue, Id=None):
+        self.setQueue(queue)
+        task = self.tubePeekTask(Id)
+        if task != None:
+            self.write(json_encode({'tube' : queue, 'task': task['task'], 'id':task['id']}))
+        else:
+            self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
+
 class taskAdd(tornado.web.RequestHandler, queueDB):
+    """
+    Make sure that we at some point add a comma check so it will write the same data to each tube
+    We will also need to apply the same change to getting.
+    Needs to support multi write.
+    """
     def put(self, queue):
         try:
             self.setQueue(queue)
@@ -143,7 +168,8 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
             if self.tubeExists() == False:
                 self.tubeCreate()
             ttr = self.get_argument("ttr",60)
-            task_id = self.tubeAddTask(self.get_argument('task'), ttr=ttr)
+            ts = self.get_argument("ts",time.time())
+            task_id = self.tubeAddTask(self.get_argument('task'), ttr=ttr, ts=ts)
             if task_id != False:
                 self.write(json_encode({'tube' : queue, 'id': task_id}))
             else:
@@ -176,6 +202,13 @@ class taskFree(tornado.web.RequestHandler, queueDB):
         free = self.tubeFreeTask(Id, self.get_argument("ts",None))
         self.db.close()
         self.write(json_encode({'tube' : queue, 'id': Id, 'freed':free}))
+
+class taskBury(tornado.web.RequestHandler, queueDB):
+    def get(self, queue, Id, ts=None):
+        self.setQueue(queue)
+        free = self.tubeBuryTask(Id, self.get_argument("ts",time.time()))
+        self.db.close()
+        self.write(json_encode({'tube' : queue, 'id': Id, 'bury':free}))
         
 application = tornado.web.Application([
     (r"/queue/(.*)/task/get", taskGet), #get the next task
@@ -184,7 +217,8 @@ application = tornado.web.Application([
     (r"/queue/(.*)/task/touch/(.*)", taskTouch),
     (r"/queue/(.*)/task/rm/(.*)", taskRm),
     (r"/queue/(.*)/task/free/(.*)", taskFree),
-    (r"/queue/(.*)/task/peak", MainHandler),
+    (r"/queue/(.*)/task/peek", taskPeek),
+    (r"/queue/(.*)/task/peek/(.*)", taskPeek),
     (r"/queue/(.*)/task/bury/(.*)", MainHandler),
     (r"/queue/(.*)/task/kick", MainHandler),
 ])
