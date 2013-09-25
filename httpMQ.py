@@ -1,25 +1,40 @@
+import re
+
 import tornado.ioloop
 import tornado.web
-from tornado.escape import json_encode
-import tornado.database as database
+from tornado.escape import json_encode, json_decode
+import torndb
 
 import time
 
 class queueDB():
+    def __init__(self):
+        self.db = torndb.Connection("localhost", "tubes", user="root", password="sql")
+    
+    def setQueue(self, name):
+        self.db = torndb.Connection("localhost", "tubes", user="root", password="sql")
+        self.tube_name = name
+    """
     def stateChangeByKey():
         UPDATE ? SET key=?, state=?, ts=? WHERE key=? and ts=? and state=? LIMIT ?
         
     def stateChangeById():
         UPDATE ? SET key=?, state=?, ts=? WHERE jobID IN (?) key=? and ts=? and state=? LIMIT ?
+   """     
+    def claimJobs(self, key, limit=1, ttr=60, ts=time.time()):
+        print dir(self.db)
+        count = self.db.execute_rowcount("UPDATE %s SET key=%s state=1, ts=%s, ttr=%s WHERE (state=0 and ts < %s) OR (state=1 and ts+ttr < %s) ORDER BY jobId ASC LIMIT %s", (self.tube_name, key, ts, ttr, ts, ts, limit,))
+        print count
+        return self.db.query("SELECT * FROM %s WHERE key=%s AND ts=%s ORDERBY jobId ASC LIMIT %s", (self.tube_name, key, ts, limit))
         
-    def claimJobs(self, key, limit=1 ttr=60, ts=None):
-        if ts 
-        UPDATE ? SET key=? state=1, ts=UNIX_TIMESTAMP(), ttr=? WHERE (state=0 and ts < ) OR (state=1 and ts+ttr < ?) ORDER BY jobId ASC LIMIT ?
-        SELECT * FROM ? WHERE key=? AND ts=? ORDERBY jobId ASC LIMIT ?
-        
-    def addJobs():
-        INSERT INTO ? (job,ttr,ts) VALUES (?, ?, ?)
-        
+    def addJobs(self, values):
+        cursor = self.db._cursor()
+        cursor.executemany("INSERT INTO `"+re.escape(self.tube_name)+"` (task,ttr,ts) VALUES (%s, %s, %s)", values)
+        stuff = {'count' : cursor.rowcount, 'id':cursor.lastrowid}
+        cursor.close()
+        return stuff
+        #return {'count':self.db.executemany_rowcount("INSERT INTO `"+re.escape(self.tube_name)+"` (task,ttr,ts) VALUES (%s, %s, %s)", values),'id':cursor.lastrowid}
+    """    
     def peekJobs():
         SELECT * FROM ? WHERE (state=0 and ts < ?) OR (state=1 and ts+ttr < ?) ORDER BY jobId ASC LIMIT ?
         
@@ -28,7 +43,7 @@ class queueDB():
     
     def deleteJobById()
         DELETE FROM ? WHERE jobId IN (?) and key LIMIT ?
-    
+    """
 
 class MainHandler(tornado.web.RequestHandler):
     def get(self):
@@ -40,7 +55,7 @@ class taskGet(tornado.web.RequestHandler, queueDB):
     """
     def get(self, queue, task=None):
         self.setQueue(queue)
-        task = self.tubeGetTask(ttr=self.get_argument("ttr",None), limit=self.get_argument("limit",1))
+        tasks = self.claimJobs('abc', ttr=self.get_argument("ttr",60), limit=self.get_argument("limit",1))
         if task != None:
             self.write(json_encode({'tube' : queue, 'task': task['task'], 'id':task['id'], 'ts':task['ts']}))
         else:
@@ -55,13 +70,23 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
     def put(self, queue):
         try:
             self.setQueue(queue)
-            
-            if self.tubeExists() == False:
-                self.tubeCreate()
+            print self.request.body
+            value = list()
+            for message in json_decode(self.request.body)['messages']:
+                if message.has_key('delay') == False:
+                    message['delay'] = 0
+                    
+                if message.has_key('time') == False:
+                    message['time'] = time.time()
+                    
+                if message.has_key('ttr') == False:
+                    message['ttr'] = 0
                 
-            task_id = self.tubeAddTask(self.get_argument('task'), ttr=self.get_argument("ttr",60), ts=self.get_argument("ts",time.time()))
-            if task_id != False:
-                self.write(json_encode({'tube' : queue, 'id': task_id}))
+                value.append([message['task'], message['ttr'], message['time']+message['delay']])
+            
+            task_id = self.addJobs(value)
+            if task_id['count'] > 0:
+                self.write(json_encode({'tube' : queue, 'id': task_id['id'], 'count':task_id['count']})) #not returning the right number of added documents
             else:
                 self.write(json_encode({'tube' : queue, 'id': False}))
                 
@@ -88,8 +113,9 @@ class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update it
         else:
             self.write(json_encode({'tube' : queue, 'id': Id, 'ts': False}))
         
-    def delete(self, queue, Id):
+    
 class taskRm(tornado.web.RequestHandler, queueDB):
+    def delete(self, queue, Id):
         self.setQueue(queue)
         rm = self.tubeRmTask(Id, self.get_argument("ts",None))
         self.db.close()
