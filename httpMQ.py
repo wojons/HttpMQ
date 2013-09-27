@@ -1,11 +1,12 @@
 import re
+import time
+import hashlib
+import random
 
 import tornado.ioloop
 import tornado.web
 from tornado.escape import json_encode, json_decode
 import torndb
-
-import time
 
 class queueDB():
     def __init__(self):
@@ -21,11 +22,24 @@ class queueDB():
     def stateChangeById():
         UPDATE ? SET key=?, state=?, ts=? WHERE jobID IN (?) key=? and ts=? and state=? LIMIT ?
    """     
-    def claimJobs(self, key, limit=1, ttr=60, ts=time.time()):
-        print dir(self.db)
-        count = self.db.execute_rowcount("UPDATE %s SET key=%s state=1, ts=%s, ttr=%s WHERE (state=0 and ts < %s) OR (state=1 and ts+ttr < %s) ORDER BY jobId ASC LIMIT %s", (self.tube_name, key, ts, ttr, ts, ts, limit,))
-        print count
-        return self.db.query("SELECT * FROM %s WHERE key=%s AND ts=%s ORDERBY jobId ASC LIMIT %s", (self.tube_name, key, ts, limit))
+    def claimJobs(self, key_hash, limit=1, ttr=60, ts=time.time()):
+        cursor = self.db._cursor()
+        cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET key_hash=%s, state=1, ts=%s, ttr=%s WHERE (state=0 and ts < %s) OR (state=1 and ts+ttr < %s) ORDER BY jobId ASC LIMIT %s", [key_hash, ts, ttr, ts, ts, limit,])
+        count = cursor.rowcount
+        cursor.close()
+        if count > 0:
+            tasks = list()
+            cursor = self.db._cursor()
+            cursor.execute("SELECT task,ts,jobId,ttr FROM `"+re.escape(self.tube_name)+"` WHERE key_hash=%s AND ts=%s ORDER BY jobId ASC LIMIT %s", [key_hash, ts, count,])
+            
+            for row in xrange(cursor.rowcount):
+                tasks.append(self.fetchoneDict(cursor))
+            
+            cursor.close()
+            return tasks
+        
+        else:
+            return None
         
     def addJobs(self, values):
         cursor = self.db._cursor()
@@ -34,6 +48,16 @@ class queueDB():
         cursor.close()
         return stuff
         #return {'count':self.db.executemany_rowcount("INSERT INTO `"+re.escape(self.tube_name)+"` (task,ttr,ts) VALUES (%s, %s, %s)", values),'id':cursor.lastrowid}
+        
+    def fetchoneDict(self, cursor):
+        row = cursor.fetchone()
+        if row is None: return None
+        cols = [ d[0] for d in cursor.description ]
+        return dict(zip(cols, row))
+        
+    def randomKey(self):
+        return hashlib.sha1(str(random.randint(0, 999999999999999999))+self.request.remote_ip+str(random.randint(0, 999999999999999999))).hexdigest()
+    
     """    
     def peekJobs():
         SELECT * FROM ? WHERE (state=0 and ts < ?) OR (state=1 and ts+ttr < ?) ORDER BY jobId ASC LIMIT ?
@@ -55,9 +79,12 @@ class taskGet(tornado.web.RequestHandler, queueDB):
     """
     def get(self, queue, task=None):
         self.setQueue(queue)
-        tasks = self.claimJobs('abc', ttr=self.get_argument("ttr",60), limit=self.get_argument("limit",1))
-        if task != None:
-            self.write(json_encode({'tube' : queue, 'task': task['task'], 'id':task['id'], 'ts':task['ts']}))
+        self.set_header("Content-Type", "application/json")
+        hash_key = self.randomKey()
+        
+        tasks = self.claimJobs(hash_key, ttr=int(self.get_argument("ttr",60)), limit=int(self.get_argument("limit",1)))
+        if tasks != None:
+            self.write(json_encode({'tube' : queue, 'tasks': tasks, 'hash_key' : hash_key}))
         else:
             self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
 
@@ -68,6 +95,8 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
     Needs to support multi write.
     """
     def put(self, queue):
+        self.set_header("Content-Type", "application/json")
+        
         try:
             self.setQueue(queue)
             print self.request.body
@@ -98,15 +127,19 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
 class taskPeek(tornado.web.RequestHandler, queueDB): #just look at the tasks in the system but dont do anything with them
     def get(self, queue, Id=None):
         self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        
         task = self.tubePeekTask(Id)
         if task != None:
             self.write(json_encode({'tube' : queue, 'task': task['task'], 'id':task['id']}))
         else:
             self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
 
-class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update its time
+class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update its time    
     def get(self, queue, Id):
         self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        
         touch = self.tubeTouchTask(Id, self.get_argument("ts",time.time()))
         if touch != False:
             self.write(json_encode({'tube' : queue, 'id': Id, 'ts':touch}))
@@ -117,6 +150,8 @@ class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update it
 class taskRm(tornado.web.RequestHandler, queueDB):
     def delete(self, queue, Id):
         self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        
         rm = self.tubeRmTask(Id, self.get_argument("ts",None))
         self.db.close()
         self.write(json_encode({'tube' : queue, 'id': Id, 'deleted':rm}))
@@ -124,6 +159,8 @@ class taskRm(tornado.web.RequestHandler, queueDB):
 class taskFree(tornado.web.RequestHandler, queueDB):
     def get(self, queue, Id):
         self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        
         free = self.tubeFreeTask(Id, self.get_argument("ts",None))
         self.db.close()
         self.write(json_encode({'tube' : queue, 'id': Id, 'freed':free}))
@@ -131,6 +168,8 @@ class taskFree(tornado.web.RequestHandler, queueDB):
 class taskBury(tornado.web.RequestHandler, queueDB):
     def get(self, queue, Id, ts=None):
         self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        
         free = self.tubeBuryTask(Id, self.get_argument("ts",time.time()))
         self.db.close()
         self.write(json_encode({'tube' : queue, 'id': Id, 'bury':free}))
