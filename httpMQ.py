@@ -2,6 +2,7 @@ import re
 import time
 import hashlib
 import random
+from decimal import *
 
 import tornado.ioloop
 import tornado.web
@@ -23,7 +24,7 @@ class queueDB():
         cursor.close()
         if count > 0:
             tasks, cursor = list(), self.db._cursor()
-            cursor.execute("SELECT task,ts,jobId,ttr FROM `"+re.escape(self.tube_name)+"` WHERE key_hash=%s AND ts=%s ORDER BY jobId ASC LIMIT %s", [key_hash, ts, count,])
+            cursor.execute("SELECT job,ts,jobId,ttr FROM `"+re.escape(self.tube_name)+"` WHERE key_hash=%s AND ts=%s ORDER BY jobId ASC LIMIT %s", [key_hash, ts, count,])
             
             for row in xrange(cursor.rowcount):
                 tasks.append(self.fetchoneDict(cursor))
@@ -35,7 +36,7 @@ class queueDB():
         
     def addJobs(self, values):
         cursor = self.db._cursor()
-        cursor.executemany("INSERT INTO `"+re.escape(self.tube_name)+"` (task,ttr,ts) VALUES (%s, %s, %s)", values)
+        cursor.executemany("INSERT INTO `"+re.escape(self.tube_name)+"` (job,ttr,ts) VALUES (%s, %s, %s)", values)
         stuff = {'count' : cursor.rowcount, 'id':cursor.lastrowid}
         cursor.close()
         return stuff
@@ -57,32 +58,35 @@ class queueDB():
         return None #return none when we got no rows back
     
     def changeState(self, state=0, key_hash=None, ts=None, Ids=None):
-        sql = self.id_key_limit(key_hash=key_hash, Ids=Ids)        
+        #print ts
+        sql = self.id_key_limit(key_hash=key_hash, ts=ts, Ids=Ids)        
         new_ts = time.time()# ts that will be used with the update
          
         cursor = self.db._cursor()
-        cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET ts=%s, state=%s WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['limit'], [new_ts,state])
+        #print sql
+        #print "UPDATE `"+re.escape(self.tube_name)+"` SET ts=%s, state=%s WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['ts']+" "+sql['limit']
+        cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET ts=%s, state=%s WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['ts']+" "+sql['limit'], [new_ts,state])
         count = cursor.rowcount
         cursor.close()
         
         return count
         
     def updateClock(self, key_hash=None, ts=None, Ids=None):
-        sql = self.id_key_limit(key_hash=key_hash, Ids=Ids)   
+        sql = self.id_key_limit(key_hash=key_hash, ts=ts, Ids=Ids)   
         new_ts = time.time()# ts that will be used with the update
          
         cursor = self.db._cursor()
-        cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET ts=%s WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['limit'], [new_ts])
+        cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET ts=%s WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['ts']+" "+sql['limit'], [new_ts])
         count = cursor.rowcount
         cursor.close()
         
         return {'count' : count, 'ts' : new_ts}
         
     def delJobs(self, key_hash=None, ts=None, Ids=None):
-        sql = self.id_key_limit(key_hash=key_hash, Ids=Ids) 
+        sql = self.id_key_limit(key_hash=key_hash, ts=ts, Ids=Ids) 
          
         cursor = self.db._cursor()
-        cursor.execute("DELETE FROM `"+re.escape(self.tube_name)+"` WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['limit'])
+        cursor.execute("DELETE FROM `"+re.escape(self.tube_name)+"` WHERE 1=1 "+sql['Ids']+" "+sql['key_hash']+" "+sql['ts']+" "+sql['limit'])
         count = cursor.rowcount
         cursor.close()
         
@@ -100,7 +104,7 @@ class queueDB():
     def randomKey(self):
         return hashlib.sha1(str(random.randint(0, 999999999999999999))+self.request.remote_ip+str(random.randint(0, 999999999999999999))).hexdigest()
     
-    def id_key_limit(self, key_hash=None, Ids=None): #felt like i was doing this way to many times
+    def id_key_limit(self, key_hash=None, ts=None, Ids=None): #felt like i was doing this way to many times
         if Ids != None:
             limit = "LIMIT "+str(len(Ids))
             Ids = "AND jobID IN (%s)" % ",".join(str(x) for x in Ids)
@@ -111,7 +115,13 @@ class queueDB():
             use_key_hash = "AND key_hash=\""+re.escape(key_hash)+"\""
         else:
             use_key_hash = ""
-        return {'key_hash': use_key_hash, 'Ids': Ids, 'limit': limit} #return the vaules
+
+        if ts != None:
+             use_ts = "AND ts="+str(ts)
+        else:
+            use_ts = ""
+            
+        return {'key_hash': use_key_hash, 'Ids': Ids, 'limit': limit, 'ts': use_ts} #return the vaules
     
     def clean_id_list(self):
         id_list = list()
@@ -151,20 +161,21 @@ class jobAdd(tornado.web.RequestHandler, queueDB):
         
         try:
             self.setQueue(queue)
-            value = list()
+            jobs = list()
             for job in json_decode(self.request.body)['jobs']:
-                if job.has_key('delay') == False:
-                    job['delay'] = 0
+                if job.has_key('job') == True:
+                    if job.has_key('delay') == False:
+                        job['delay'] = 0
+                        
+                    if job.has_key('time') == False:
+                        job['time'] = time.time()
+                        
+                    if job.has_key('ttr') == False:
+                        job['ttr'] = 0
                     
-                if job.has_key('time') == False:
-                    job['time'] = time.time()
-                    
-                if job.has_key('ttr') == False:
-                    job['ttr'] = 0
-                
-                value.append([job['job'], job['ttr'], job['time']+job['delay']])
+                    jobs.append([job['job'], job['ttr'], job['time']+job['delay']])
             
-            job_id = self.addJobs(value)
+            job_id = self.addJobs(jobs)
             if job_id['count'] > 0:
                 self.write(json_encode({'tube' : queue, 'id': job_id['id'], 'count':job_id['count']})) #not returning the right number of added documents
             else:
@@ -190,7 +201,7 @@ class jobTouch(tornado.web.RequestHandler, queueDB): #touch a job to update its 
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
         key_hash, ts = self.get_argument("key_hash", None), self.get_argument("ts", None) #get some values from the query string
-        if ts is int: ts = float(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
+        if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
         self.payload = json_decode(self.request.body)
         id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
         
@@ -212,14 +223,14 @@ class jobDel(tornado.web.RequestHandler, queueDB):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
         key_hash, ts = self.get_argument("key_hash", None), self.get_argument("ts", None) #get some values from the query string
-        if ts is int: ts = float(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
+        if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
         self.payload = json_decode(self.request.body)
         id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
                 delete = self.delJobs(key_hash=key_hash, ts=ts, Ids=id_list)
-                if touch > 0:
+                if delete > 0:
                     self.write(json_encode({'tube' : queue, 'count':delete}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
@@ -233,14 +244,14 @@ class jobFree(tornado.web.RequestHandler, queueDB): #touch a job to update its t
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
         key_hash, ts = self.get_argument("key_hash", None), self.get_argument("ts", None) #get some values from the query string
-        if ts is int: ts = float(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
+        if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
         self.payload = json_decode(self.request.body)
         id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
                 free = self.changeState(state=0, key_hash=key_hash, ts=ts, Ids=id_list)
-                if touch > 0:
+                if free > 0:
                     self.write(json_encode({'tube' : queue, 'count':free}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
@@ -254,14 +265,14 @@ class jobBury(tornado.web.RequestHandler, queueDB):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
         key_hash, ts = self.get_argument("key_hash", None), self.get_argument("ts", None) #get some values from the query string
-        if ts is int: ts = float(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
-        self.payload json_decode(self.request.body)
+        if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
+        self.payload = json_decode(self.request.body)
         id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
                 bury = self.changeState(state=-1, key_hash=key_hash, ts=ts, Ids=id_list)
-                if touch > 0:
+                if bury > 0:
                     self.write(json_encode({'tube' : queue, 'count':bury}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
