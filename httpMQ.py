@@ -125,22 +125,22 @@ class queueDB():
         
         return id_list
         
-class taskGet(tornado.web.RequestHandler, queueDB):
+class jobGet(tornado.web.RequestHandler, queueDB):
     """
     This will need to be able to get from more then one queue and be able to get more then one item
     """
-    def get(self, queue, task=None):
+    def get(self, queue, job=None):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
         hash_key = self.randomKey()
         
-        tasks = self.claimJobs(hash_key, ttr=int(self.get_argument("ttr",60)), limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
-        if tasks != None:
-            self.write(json_encode({'tube' : queue, 'tasks': tasks, 'hash_key' : hash_key}))
+        jobs = self.claimJobs(hash_key, ttr=int(self.get_argument("ttr",60)), limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
+        if jobs != None:
+            self.write(json_encode({'tube' : queue, 'jobs': jobs, 'hash_key' : hash_key}))
         else:
-            self.write(json_encode({'tube' : queue, 'task': None, 'id':None, 'error' : 'No task avaiable'}))
+            self.write(json_encode({'tube' : queue, 'job': None, 'id':None, 'error' : 'No job avaiable'}))
 
-class taskAdd(tornado.web.RequestHandler, queueDB):
+class jobAdd(tornado.web.RequestHandler, queueDB):
     """
     Make sure that we at some point add a comma check so it will write the same data to each tube
     We will also need to apply the same change to getting.
@@ -152,40 +152,40 @@ class taskAdd(tornado.web.RequestHandler, queueDB):
         try:
             self.setQueue(queue)
             value = list()
-            for message in json_decode(self.request.body)['messages']:
-                if message.has_key('delay') == False:
-                    message['delay'] = 0
+            for job in json_decode(self.request.body)['jobs']:
+                if job.has_key('delay') == False:
+                    job['delay'] = 0
                     
-                if message.has_key('time') == False:
-                    message['time'] = time.time()
+                if job.has_key('time') == False:
+                    job['time'] = time.time()
                     
-                if message.has_key('ttr') == False:
-                    message['ttr'] = 0
+                if job.has_key('ttr') == False:
+                    job['ttr'] = 0
                 
-                value.append([message['task'], message['ttr'], message['time']+message['delay']])
+                value.append([job['job'], job['ttr'], job['time']+job['delay']])
             
-            task_id = self.addJobs(value)
-            if task_id['count'] > 0:
-                self.write(json_encode({'tube' : queue, 'id': task_id['id'], 'count':task_id['count']})) #not returning the right number of added documents
+            job_id = self.addJobs(value)
+            if job_id['count'] > 0:
+                self.write(json_encode({'tube' : queue, 'id': job_id['id'], 'count':job_id['count']})) #not returning the right number of added documents
             else:
                 self.write(json_encode({'tube' : queue, 'id': False}))
                 
         except tornado.web.MissingArgumentError:
-            self.write(json_encode({'tube' : queue, 'error': 'No task provided'}))
+            self.write(json_encode({'tube' : queue, 'error': 'No job provided'}))
         
         self.db.close()
 
-class taskPeek(tornado.web.RequestHandler, queueDB): #just look at the tasks in the system but dont do anything with them
+class jobPeek(tornado.web.RequestHandler, queueDB): #just look at the jobs in the system but dont do anything with them
     def get(self, queue, Id=None):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
-        task = self.peekJobs(limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
-        if task != None:
-            self.write(json_encode({'tube' : queue, 'tasks': task}))
+        job = self.peekJobs(limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
+        if job != None:
+            self.write(json_encode({'tube' : queue, 'jobs': job}))
         else:
-            self.write(json_encode({'tube' : queue, 'tasks': None, 'error' : 'No task avaiable'}))
+            self.write(json_encode({'tube' : queue, 'jobs': None, 'error' : 'No job avaiable'}))
 
-class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update its time    
+class jobTouch(tornado.web.RequestHandler, queueDB): #touch a job to update its time    
     def post(self, queue):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
@@ -207,7 +207,7 @@ class taskTouch(tornado.web.RequestHandler, queueDB): #touch a task to update it
             self.write(json_encode({'tube' : queue, 'error': 'Missing key_hash or Ids to work with'}))
         
     
-class taskDel(tornado.web.RequestHandler, queueDB):
+class jobDel(tornado.web.RequestHandler, queueDB):
     def delete(self, queue):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
@@ -218,9 +218,9 @@ class taskDel(tornado.web.RequestHandler, queueDB):
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
-                touch = self.delJobs(key_hash=key_hash, ts=ts, Ids=id_list)
+                delete = self.delJobs(key_hash=key_hash, ts=ts, Ids=id_list)
                 if touch > 0:
-                    self.write(json_encode({'tube' : queue, 'count':touch}))
+                    self.write(json_encode({'tube' : queue, 'count':delete}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
             else:
@@ -228,7 +228,7 @@ class taskDel(tornado.web.RequestHandler, queueDB):
         else:#be cause we had no key hash or ids
             self.write(json_encode({'tube' : queue, 'error': 'Missing key_hash or Ids to work with'}))
         
-class taskFree(tornado.web.RequestHandler, queueDB): #touch a task to update its time    
+class jobFree(tornado.web.RequestHandler, queueDB): #touch a job to update its time    
     def post(self, queue):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
@@ -239,9 +239,9 @@ class taskFree(tornado.web.RequestHandler, queueDB): #touch a task to update its
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
-                touch = self.changeState(state=0, key_hash=key_hash, ts=ts, Ids=id_list)
+                free = self.changeState(state=0, key_hash=key_hash, ts=ts, Ids=id_list)
                 if touch > 0:
-                    self.write(json_encode({'tube' : queue, 'count':touch}))
+                    self.write(json_encode({'tube' : queue, 'count':free}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
             else:
@@ -249,7 +249,7 @@ class taskFree(tornado.web.RequestHandler, queueDB): #touch a task to update its
         else:#be cause we had no key hash or ids
             self.write(json_encode({'tube' : queue, 'error': 'Missing key_hash or Ids to work with'}))
 
-class taskBury(tornado.web.RequestHandler, queueDB):
+class jobBury(tornado.web.RequestHandler, queueDB):
     def post(self, queue):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
@@ -260,9 +260,9 @@ class taskBury(tornado.web.RequestHandler, queueDB):
         
         if key_hash != None or id_list != None:
             if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
-                touch = self.changeState(state=-1, key_hash=key_hash, ts=ts, Ids=id_list)
+                bury = self.changeState(state=-1, key_hash=key_hash, ts=ts, Ids=id_list)
                 if touch > 0:
-                    self.write(json_encode({'tube' : queue, 'count':touch}))
+                    self.write(json_encode({'tube' : queue, 'count':bury}))
                 else:
                     self.write(json_encode({'tube' : queue, 'count': False}))
             else:
@@ -273,14 +273,14 @@ class taskBury(tornado.web.RequestHandler, queueDB):
     
         
 application = tornado.web.Application([
-    (r"/queue/(.*)/task/get", taskGet), #get the next task
-    (r"/queue/(.*)/task/add", taskAdd),
-    (r"/queue/(.*)/task/touch", taskTouch),
-    (r"/queue/(.*)/task/delete", taskDel),
-    (r"/queue/(.*)/task/free", taskFree),
-    (r"/queue/(.*)/task/peek", taskPeek),
-    (r"/queue/(.*)/task/bury", taskBury),
-    #(r"/queue/(.*)/task/kick", MainHandler),
+    (r"/queue/(.*)/job/get", jobGet), #get the next job
+    (r"/queue/(.*)/job/add", jobAdd),
+    (r"/queue/(.*)/job/touch", jobTouch),
+    (r"/queue/(.*)/job/delete", jobDel),
+    (r"/queue/(.*)/job/free", jobFree),
+    (r"/queue/(.*)/job/peek", jobPeek),
+    (r"/queue/(.*)/job/bury", jobBury),
+    #(r"/queue/(.*)/job/kick", MainHandler),
 ])
 
 if __name__ == "__main__":
