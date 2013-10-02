@@ -20,17 +20,23 @@ class queueDB():
     def claimJobs(self, key_hash, limit=1, ttr=60, ts=time.time()):
         cursor = self.db._cursor()
         cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET key_hash=%s, state=1, ts=%s, ttr=%s WHERE (state=0 and ts < %s) OR (state=1 and ts+ttr < %s) ORDER BY jobId ASC LIMIT %s", [key_hash, ts, ttr, ts, ts, limit,])
+        print str(time.time())
+        print json_encode([ts])
         count = cursor.rowcount
         cursor.close()
         if count > 0:
-            tasks, cursor = list(), self.db._cursor()
+            tasks, jobs, cursor = list(), list(), self.db._cursor()
             cursor.execute("SELECT job,ts,jobId,ttr FROM `"+re.escape(self.tube_name)+"` WHERE key_hash=%s AND ts=%s ORDER BY jobId ASC LIMIT %s", [key_hash, ts, count,])
             
             for row in xrange(cursor.rowcount):
                 tasks.append(self.fetchoneDict(cursor))
             
+            for task in tasks:
+                task['ts'] = repr(task['ts'])
+                jobs.append(task)
+            
             cursor.close()
-            return tasks
+            return jobs
         
         return None
         
@@ -99,6 +105,7 @@ class queueDB():
         row = cursor.fetchone()
         if row is None: return None
         cols = [ d[0] for d in cursor.description ]
+        print row
         return dict(zip(cols, row))
         
     def randomKey(self):
@@ -125,10 +132,13 @@ class queueDB():
     
     def clean_id_list(self):
         id_list = list()
-        if self.payload.has_key('Ids'):
-            for Id in payload['Ids']:
-                if type(Id) is int:
-                    id_list.append(Id)
+        try:
+            if self.payload.has_key('Ids'):
+                for Id in payload['Ids']:
+                    if type(Id) is int:
+                        id_list.append(Id)
+        except Exception, e:
+            pass
         
         if len(id_list) == 0:
             return None
@@ -142,11 +152,12 @@ class jobGet(tornado.web.RequestHandler, queueDB):
     def get(self, queue, job=None):
         self.setQueue(queue)
         self.set_header("Content-Type", "application/json")
-        hash_key = self.randomKey()
+        key_hash = self.randomKey()
         
-        jobs = self.claimJobs(hash_key, ttr=int(self.get_argument("ttr",60)), limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
+        jobs = self.claimJobs(key_hash, ttr=int(self.get_argument("ttr",60)), limit=int(self.get_argument("limit",1)), ts=float(self.get_argument("ts",time.time())))
+        print jobs
         if jobs != None:
-            self.write(json_encode({'tube' : queue, 'jobs': jobs, 'hash_key' : hash_key}))
+            self.write(json_encode({'tube' : queue, 'jobs': jobs, 'key_hash' : key_hash}))
         else:
             self.write(json_encode({'tube' : queue, 'job': None, 'id':None, 'error' : 'No job avaiable'}))
 
@@ -156,13 +167,17 @@ class jobAdd(tornado.web.RequestHandler, queueDB):
     We will also need to apply the same change to getting.
     Needs to support multi write.
     """
+    def prepare(self):
+        print self.request
+    
     def put(self, queue):
         self.set_header("Content-Type", "application/json")
-        
+        print "-----------"
         try:
             self.setQueue(queue)
             jobs = list()
             for job in json_decode(self.request.body)['jobs']:
+                
                 if job.has_key('job') == True:
                     if job.has_key('delay') == False:
                         job['delay'] = 0
@@ -185,6 +200,7 @@ class jobAdd(tornado.web.RequestHandler, queueDB):
             self.write(json_encode({'tube' : queue, 'error': 'No job provided'}))
         
         self.db.close()
+        print "--------close---------"
 
 class jobPeek(tornado.web.RequestHandler, queueDB): #just look at the jobs in the system but dont do anything with them
     def get(self, queue, Id=None):
@@ -224,7 +240,11 @@ class jobDel(tornado.web.RequestHandler, queueDB):
         self.set_header("Content-Type", "application/json")
         key_hash, ts = self.get_argument("key_hash", None), self.get_argument("ts", None) #get some values from the query string
         if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
-        self.payload = json_decode(self.request.body)
+        try:
+            self.payload = json_decode(self.request.body)
+        except Exception, e:
+            pass
+            
         id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
         
         if key_hash != None or id_list != None:
@@ -280,8 +300,26 @@ class jobBury(tornado.web.RequestHandler, queueDB):
                 self.write(json_encode({'tube' : queue, 'error': 'Trying to use key_hash but missing ts'}))
         else:#be cause we had no key hash or ids
             self.write(json_encode({'tube' : queue, 'error': 'Missing key_hash or Ids to work with'}))
-            
-    
+
+class jobKick(tornado.web.RequestHandler, queueDB):
+    def post(self, queue):
+        self.setQueue(queue)
+        self.set_header("Content-Type", "application/json")
+        if ts != None: ts = Decimal(ts) #if we got the vaule ts lets make sure that its no longer a string but a float
+        self.payload = json_decode(self.request.body)
+        id_list = self.clean_id_list() #get paylayload and decode, get a list of ids from body
+        
+        if key_hash != None or id_list != None:
+            if id_list != None or ts != None: #if we dont have ids we need to use key_hash with a time
+                bury = self.changeState(state=-1, key_hash=key_hash, ts=ts, Ids=id_list)
+                if bury > 0:
+                    self.write(json_encode({'tube' : queue, 'count':bury}))
+                else:
+                    self.write(json_encode({'tube' : queue, 'count': False}))
+            else:
+                self.write(json_encode({'tube' : queue, 'error': 'Trying to use key_hash but missing ts'}))
+        else:#be cause we had no key hash or ids
+            self.write(json_encode({'tube' : queue, 'error': 'Missing key_hash or Ids to work with'}))
         
 application = tornado.web.Application([
     (r"/queue/(.*)/job/get", jobGet), #get the next job
@@ -291,7 +329,7 @@ application = tornado.web.Application([
     (r"/queue/(.*)/job/free", jobFree),
     (r"/queue/(.*)/job/peek", jobPeek),
     (r"/queue/(.*)/job/bury", jobBury),
-    #(r"/queue/(.*)/job/kick", MainHandler),
+    (r"/queue/(.*)/job/kick", jobKick),
 ])
 
 if __name__ == "__main__":
