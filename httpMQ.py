@@ -20,8 +20,6 @@ class queueDB():
     def claimJobs(self, key_hash, limit=1, ttr=60, ts=time.time()):
         cursor = self.db._cursor()
         cursor.execute("UPDATE `"+re.escape(self.tube_name)+"` SET key_hash=%s, state=1, ts=%s, ttr=%s WHERE (state=0 and ts < %s) OR (state=1 and ts+ttr < %s) ORDER BY jobId ASC LIMIT %s", [key_hash, ts, ttr, ts, ts, limit,])
-        print str(time.time())
-        print json_encode([ts])
         count = cursor.rowcount
         cursor.close()
         if count > 0:
