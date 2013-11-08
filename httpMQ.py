@@ -199,6 +199,7 @@ class jobAdd(tornado.web.RequestHandler, queueDB):
             self.write(json_encode({'tube' : queue, 'error': 'No job provided'}))
         
         self.db.close()
+        print "--------close---------"
 
 class jobPeek(tornado.web.RequestHandler, queueDB): #just look at the jobs in the system but dont do anything with them
     def get(self, queue, Id=None):
